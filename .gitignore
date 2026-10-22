@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+
+# Segredos: só o .env.example entra no repositório
+.env
+.env.*
+!.env.example
+
+# Dados e artefatos gerados (recriados por scripts/download_data.py e pelos treinos)
+data/raw/*
+data/processed/*
+!data/**/.gitkeep
+mlruns/
+mlartifacts/
+
+# Sistema
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

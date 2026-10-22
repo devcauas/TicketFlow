@@ -1,0 +1,29 @@
+[project]
+name = "ticketflow"
+version = "0.1.0"
+description = "Triagem automática de chamados de suporte com ML em produção e agentes de IA"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=3.1.0",
+    "pyarrow>=26.0.0",
+    "python-dotenv>=1.2.4",
+    "scikit-learn>=1.9.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "jupyter>=1.1.1",
+    "langdetect>=1.0.9",
+    "matplotlib>=3.11.2",
+    "nbconvert>=7.17.2",
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+    "seaborn>=0.13.2",
+]
+
+[tool.ruff]
+line-length = 100
