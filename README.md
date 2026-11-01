@@ -4,10 +4,8 @@ Triagem automática de chamados de suporte: classifica cada ticket por **fila** 
 falta quando o ticket está incompleto e **aprende com as correções dos atendentes**.
 
 > **Status: em construção.** A fundação está pronta: decisões de arquitetura, estrutura do repositório e exploração
-> do dataset. O próximo passo é o modelo clássico (ver [Roadmap](#14-roadmap)). As seções marcadas como *planejado*
-> descrevem o desenho, não resultados.
-
-**Em resumo**, o projeto demonstra os dois diferenciais mais pedidos em vagas de ML/IA:
+> do dataset. O próximo passo é o esqueleto do grafo de triagem no LangGraph (ver [Roadmap](#14-roadmap)). As seções
+> marcadas como *planejado* descrevem o desenho, não resultados.
 
 - **ML em produção:** classificador versionado no MLflow, monitoramento de drift com Evidently e retreino orquestrado
   pelo Prefect. Um modelo novo só substitui o atual se ganhar dele (*champion/challenger*).
@@ -88,6 +86,55 @@ escalar chamados.
 | Resolução (RAG) | Busca tickets parecidos já resolvidos e redige a resposta | Busca na base de conhecimento | Enviar sem aprovação humana |
 | SLA | Acompanha o prazo de cada prioridade e escala o que vai estourar | Consultar a fila e notificar o responsável | Alterar a classificação |
 
+### Quando um ticket está completo
+
+"Completo" significa **completo para resolver**: o time consegue agir sem voltar a falar com o cliente. O agente de
+esclarecimento roda **antes** do classificador, ou seja, sem saber a fila. Por isso usa uma **lista única** de
+informações:
+
+| Item | Decisão | Por quê | Tem | Não tem |
+|---|---|---|---|---|
+| **O quê** (problema ou pedido) | **Mínimo** | Sem ele, o analista não consegue começar | "Integrations are failing due to recent API changes." | "Our system" |
+| **Onde** (sistema, produto ou serviço) | **Mínimo** | Sem ele, não se sabe o que investigar | "Recent invoices show unexpected billing inconsistencies." | "Requesting assistance with integration procedures" |
+| Quando | Desejável | Raramente vem no e-mail; a hora de abertura o sistema já registra | "Since yesterday's update, login fails." | "Login fails." |
+| Evidência | Desejável | Nem todo ticket é um problema; anexos não são verificáveis no texto | "Error 503: Service Unavailable on checkout." | "Checkout is broken." |
+| Contexto | Desejável | Acelera a solução, mas não impede de começar | "Restarting didn't help; the whole sales team is affected." | "The app crashes." |
+
+Se faltar um item **mínimo**, o ticket trava e o agente pede ao cliente o que falta. Se faltar só um **desejável**, o
+ticket segue, e o agente apenas sugere ao cliente que mande a informação.
+
+**Como verificar, em duas faixas de tamanho** (assunto + corpo):
+
+- **Abaixo de X caracteres:** incompleto direto, sem LLM. Exemplo: "description of the problem".
+- **Entre X e Y:** o LLM avalia se O quê e Onde estão presentes.
+- **Acima de Y:** considerado completo.
+
+X e Y ficam na configuração e serão calibrados numa amostra rotulada à mão, porque o dataset não tem um rótulo de
+"incompleto".
+
+### Grafo de triagem
+
+O primeiro grafo cobre só a triagem. No esqueleto, todos os nós devolvem valores fixos; o LLM e o modelo entram
+depois, sem mudar o fluxo.
+
+```mermaid
+flowchart LR
+    A[verificar_completude] -- incompleto --> B[pedir_esclarecimento] --> FIM1((fim))
+    A -- completo --> C[classificar]
+    C -- confiança alta --> D[encaminhar] --> FIM2((fim))
+    C -- confiança baixa --> E[revisar] --> FIM3((fim))
+```
+
+- **O esclarecimento encerra a execução.** Quando o cliente responde, o ticket enriquecido gera uma execução nova.
+  Esperar dentro do grafo exigiria guardar o estado por horas ou dias.
+- **O classificador é um contrato:** recebe o texto e devolve fila, confiança e as 2 filas mais prováveis. O grafo não
+  sabe se, por trás, está o baseline TF-IDF ou o modelo final.
+- **O agente de SLA fica fora deste grafo:** ele não age sobre o ticket que chega, e sim vigia a fila ao longo do
+  tempo, como uma tarefa periódica.
+- **O estado (`TicketState`) é um `TypedDict`:** `ticket_id`, `subject` e `body` na entrada; `is_complete`,
+  `missing_info` e `suggested_info` vindos da verificação; `queue`, `confidence` e `top_queues` vindos do
+  classificador; `route` com o destino final.
+
 ## 5. Dataset
 
 [Tobi-Bueck/customer-support-tickets](https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets)
@@ -156,7 +203,7 @@ Tudo roda localmente com ferramentas open source. A AWS fica para depois que o s
 | ML em produção | MLflow | Registro dos treinos e versionamento no Model Registry | ✅ base |
 | ML em produção | Evidently | Detecção de drift: o gatilho do retreino | 🔜 |
 | ML em produção | Prefect | Retreino: junta correções, treina, compara e só promove se for melhor | 🔜 |
-| Agentes | LangGraph | Agentes como grafo com estado e aprovação humana no fluxo | 🔜 |
+| Agentes | LangGraph | Agentes como grafo com estado e aprovação humana no fluxo | 🚧 esqueleto |
 | Agentes | LLM via API | Qualidade nos casos difíceis; custo controlado pelo volume pequeno | 🔜 |
 | Agentes | ChromaDB + embeddings | Base de conhecimento para a busca por similaridade (RAG) | 🔜 |
 | Agentes | Langfuse | Tracing dos agentes, versionamento de prompts e avaliações | 🔜 |
@@ -179,6 +226,13 @@ Tudo roda localmente com ferramentas open source. A AWS fica para depois que o s
 | Nuvem | AWS adiada; tudo local com MLOps open source | Foco no sistema antes da infraestrutura; MLflow e Evidently funcionam em qualquer nuvem |
 | Ambiente Python | uv com `pyproject.toml` e lockfile | Instalação reproduzível e rápida, com as versões exatas no `uv.lock` |
 | Backend do MLflow | Banco `mlflow` no mesmo PostgreSQL | Um serviço a menos para subir, com o histórico isolado dos dados do produto |
+| Ordem de construção | Grafo de agentes antes do modelo clássico, com o baseline do notebook como classificador provisório | Valida o fluxo cedo e mostra o que os agentes precisam do modelo. O risco de acoplar o grafo a um modelo provisório é evitado pelo contrato do classificador |
+| "Ticket completo" | Completo para resolver, não só para encaminhar | Um ticket pode indicar a fila e ainda assim não permitir que o time aja ("fui cobrado duas vezes", sem qual fatura) |
+| Posição do esclarecimento | Antes do classificador, com uma lista única de informações | Sem a fila não dá para usar listas por fila, e há uma lista só para manter. O custo são perguntas genéricas ao cliente; a evolução natural é uma segunda checagem por fila depois do classificador |
+| Informações mínimas | Só O quê e Onde; Quando, Evidência e Contexto são desejáveis | Exigir tudo travaria quase todo ticket. Anexos e logs não são verificáveis no texto, e dados como ID do cliente ou cartão o sistema já tem ou não devem ser pedidos por ticket |
+| Verificação de completude | Duas faixas de tamanho: curto demais é incompleto sem LLM; a faixa intermediária vai para o LLM | Os tickets curtos são os casos fáceis. O LLM fica para o ambíguo, onde uma regra de tamanho sozinha erraria |
+| Espera pelo cliente | O esclarecimento encerra a execução; a resposta gera uma nova | Mais simples de entender e de testar que manter o grafo pausado por dias |
+| Agente de SLA | Fora do grafo de triagem, como tarefa periódica | Ele vigia a fila ao longo do tempo, não o ticket que chega |
 
 ## 10. Escala e desempenho *(planejado)*
 
@@ -202,6 +256,10 @@ Tudo roda localmente com ferramentas open source. A AWS fica para depois que o s
 src/ticketflow/        Pacote Python do projeto
   config.py            Caminhos e configurações lidas do .env
   data/load.py         Leitura do dataset com a limpeza mínima comum a todas as etapas
+  agents/              Grafo de triagem no LangGraph (em construção)
+    state.py           O estado: o que o ticket carrega pelo grafo
+    nodes.py           Uma função por nó
+    graph.py           Montagem do grafo: nós e arestas
 scripts/
   download_data.py     Baixa o dataset do Hugging Face para data/raw/
 notebooks/
@@ -231,33 +289,38 @@ uv run jupyter lab notebooks/             # abre a exploração
   - [x] Problema de negócio e decisões de arquitetura
   - [x] Estrutura do repositório, ambiente (uv) e Docker Compose base (PostgreSQL + MLflow)
   - [x] Exploração do dataset e revisão das premissas
-- [ ] **Fase 1 · Modelo clássico**
+- [ ] **Fase 1 · Esqueleto do grafo de triagem**
+  - [x] Definição de ticket completo e arquitetura do grafo
+  - [ ] Estado (`TicketState`)
+  - [ ] Nós com valores fixos e arestas condicionais
+  - [ ] Testes dos três caminhos: esclarecimento, encaminhamento e revisão
+  - [ ] Contrato do classificador, com o baseline TF-IDF como implementação provisória
+- [ ] **Fase 2 · Modelo clássico**
   - [ ] Divisão treino/validação/teste fixa e reproduzível
   - [ ] Baselines de fila e prioridade, com pesos de classe, registrados no MLflow
   - [ ] Comparação com embeddings multilíngues
   - [ ] Calibração (ECE) e escolha do limiar pela meta de acerto
   - [ ] Regras de P1 e mapeamento para P2–P4
-  - [ ] Modelo campeão no Model Registry
-- [ ] **Fase 2 · API e banco**
+  - [ ] Modelo campeão no Model Registry, plugado no contrato do classificador
+- [ ] **Fase 3 · API e banco**
   - [ ] Esquema no PostgreSQL: tickets, classificações e correções
   - [ ] FastAPI: receber ticket, classificar e registrar correção
-- [ ] **Fase 3 · Agentes**
-  - [ ] Grafo no LangGraph com aprovação humana
-  - [ ] Agente de esclarecimento, avaliado nos tickets curtos do dataset
-  - [ ] Agente revisor, comparado ao modelo nos casos de baixa confiança
+- [ ] **Fase 4 · Agentes com LLM**
+  - [ ] Agente de esclarecimento, avaliado numa amostra rotulada à mão
+  - [ ] Agente revisor, comparado ao modelo nos casos de baixa confiança, com aprovação humana
   - [ ] Agente de resolução com RAG sobre as respostas dos atendentes (ChromaDB)
-  - [ ] Agente de SLA
+  - [ ] Agente de SLA como tarefa periódica
   - [ ] Tracing e avaliações no Langfuse
-- [ ] **Fase 4 · MLOps**
+- [ ] **Fase 5 · MLOps**
   - [ ] Monitoramento de drift com Evidently
   - [ ] Retreino no Prefect com portão champion/challenger
   - [ ] Drift simulado com tickets em português
-- [ ] **Fase 5 · Interface e qualidade**
+- [ ] **Fase 6 · Interface e qualidade**
   - [ ] Tela do atendente em Next.js
   - [ ] Testes e avaliações no GitHub Actions
-- [ ] **Fase 6 · Escala**
+- [ ] **Fase 7 · Escala**
   - [ ] Processamento em lote, teste de carga com Locust e análise do gargalo
-- [ ] **Fase 7 · Divulgação**
+- [ ] **Fase 8 · Divulgação**
   - [ ] Artigo (SpecificData e LinkedIn)
 
 ## 15. Pendências
@@ -266,12 +329,12 @@ Decisões a fechar antes ou durante a implementação, com o que os dados já di
 
 | Pendência | O que os dados dizem | Quando fechar |
 |---|---|---|
-| Meta de acerto nos tickets automáticos (define o limiar) | No baseline, 95% de acerto automatiza ~8% dos tickets; 90% automatiza ~17% | Fase 1, depois de testar modelos melhores |
-| Quais filas viram categorias, e se as pequenas serão agrupadas | Agrupar as três filas de suporte sobe a acurácia de 59% para 74%, mas o F1 macro cai. O desbalanceamento continua | Fase 1 |
-| Provedor e modelo do LLM (priorizar um modelo pequeno e barato) | O LLM pode receber a maior parte do volume, então o custo por ticket pesa mais que o previsto | Fase 3, comparando acerto e custo nos mesmos tickets |
-| Regras que elevam um ticket para P1 | *high* é 39% dos tickets; as regras precisam ser estreitas para o P1 continuar raro | Fase 1 |
-| Definição de "ticket incompleto" | 904 tickets têm corpo com menos de 60 caracteres | Fase 3 |
-| Fração de correções que dispara o retreino | Sem dado ainda | Fase 4 |
+| Meta de acerto nos tickets automáticos (define o limiar) | No baseline, 95% de acerto automatiza ~8% dos tickets; 90% automatiza ~17% | Fase 2, depois de testar modelos melhores |
+| Quais filas viram categorias, e se as pequenas serão agrupadas | Agrupar as três filas de suporte sobe a acurácia de 59% para 74%, mas o F1 macro cai. O desbalanceamento continua | Fase 2 |
+| Provedor e modelo do LLM (priorizar um modelo pequeno e barato) | O LLM pode receber a maior parte do volume, então o custo por ticket pesa mais que o previsto | Fase 4, comparando acerto e custo nos mesmos tickets |
+| Regras que elevam um ticket para P1 | *high* é 39% dos tickets; as regras precisam ser estreitas para o P1 continuar raro | Fase 2 |
+| Limites X e Y das faixas de completude | A definição está fechada (ver [Agentes](#4-agentes)). 904 tickets têm corpo com menos de 60 caracteres, mas falta uma amostra rotulada à mão (~100 tickets) para calibrar | Fase 4 |
+| Fração de correções que dispara o retreino | Sem dado ainda | Fase 5 |
 
 ## 16. Futuras implementações
 
@@ -291,6 +354,9 @@ A AWS é a primeira evolução, depois que o sistema estiver completo rodando lo
 - As correções dos atendentes serão simuladas a partir dos rótulos do dataset, já que não há atendentes reais.
 - O MLflow usa o mesmo servidor PostgreSQL dos dados do produto, em outro banco; numa empresa seriam instâncias
   separadas.
+- O agente de esclarecimento faz perguntas genéricas (O quê e Onde), porque roda antes de saber a fila. Uma empresa
+  real teria também checklists por fila, como número da fatura em cobrança.
+- Anexos (prints, logs) não são verificados: o dataset é só texto.
 
 ---
 
