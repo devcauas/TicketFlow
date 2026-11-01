@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Triagem automática de chamados de suporte com ML em produção e agentes de IA"
 requires-python = ">=3.12"
 dependencies = [
+    "langgraph>=1.2.19",
     "pandas>=3.1.0",
     "pyarrow>=26.0.0",
     "python-dotenv>=1.2.4",
