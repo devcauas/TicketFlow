@@ -114,8 +114,8 @@ X e Y ficam na configuração e serão calibrados numa amostra rotulada à mão,
 
 ### Grafo de triagem
 
-O primeiro grafo cobre só a triagem. No esqueleto, todos os nós devolvem valores fixos; o LLM e o modelo entram
-depois, sem mudar o fluxo.
+O primeiro grafo cobre só a triagem. O esqueleto está pronto em `src/ticketflow/agents/`, sem LLM e sem modelo: os
+nós usam regras provisórias, e o LLM e o modelo entram depois, sem mudar o fluxo.
 
 ```mermaid
 flowchart LR
@@ -133,7 +133,15 @@ flowchart LR
   tempo, como uma tarefa periódica.
 - **O estado (`TicketState`) é um `TypedDict`:** `ticket_id`, `subject` e `body` na entrada; `is_complete`,
   `missing_info` e `suggested_info` vindos da verificação; `queue`, `confidence` e `top_queues` vindos do
-  classificador; `route` com o destino final.
+  classificador; `route` com o destino final. Só os 3 campos de entrada são obrigatórios; os outros são
+  `NotRequired`, porque cada nó só pode contar com o que os nós anteriores do seu caminho preencheram.
+- **Os nós decidem e as roteadoras só leem.** `verificar_completude` e `classificar` gravam `route`; as funções
+  roteadoras do `graph.py` apenas devolvem o nome do próximo nó. A comparação com o limiar vive em um lugar só.
+- **Regras provisórias do esqueleto:** corpo com menos de 60 caracteres é incompleto; o classificador falso
+  procura "invoice" ou "billing" (Billing and Payments, 0,98) e, se não achar, devolve Technical Support (0,90). O
+  limiar de encaminhamento é 0,95. Os nós finais ainda não agem: só marcam onde entram as ações reais.
+- **Testes:** `tests/agents/test_graph.py` roda os 3 caminhos com `invoke`, entrando só com o que o cliente envia, e
+  confere o estado final. Inclui um teste de fronteira (corpo com exatamente 60 caracteres é completo).
 
 ## 5. Dataset
 
@@ -233,6 +241,10 @@ Tudo roda localmente com ferramentas open source. A AWS fica para depois que o s
 | Verificação de completude | Duas faixas de tamanho: curto demais é incompleto sem LLM; a faixa intermediária vai para o LLM | Os tickets curtos são os casos fáceis. O LLM fica para o ambíguo, onde uma regra de tamanho sozinha erraria |
 | Espera pelo cliente | O esclarecimento encerra a execução; a resposta gera uma nova | Mais simples de entender e de testar que manter o grafo pausado por dias |
 | Agente de SLA | Fora do grafo de triagem, como tarefa periódica | Ele vigia a fila ao longo do tempo, não o ticket que chega |
+| Estado sem reducers | Cada nó sobrescreve os próprios campos | Os caminhos são exclusivos: nenhum par de nós roda no mesmo passo nem escreve a mesma chave numa execução. Reducers entram se houver nós em paralelo ou histórico acumulado |
+| Quem decide a rota | O nó grava `route`; a roteadora só lê | A regra (limiar, e no futuro a distância entre as 2 filas) fica num lugar só, e o grafo não precisa saber o que é confiança |
+| Dado × texto no estado | O estado guarda listas de itens (`missing_info`, `suggested_info`), não a mensagem ao cliente | Permite trocar a regra de tamanho pelo LLM sem mexer na mensagem, e vice-versa. A mensagem é montada no `pedir_esclarecimento` |
+| Testes do grafo | `invoke` com o ticket do cliente e asserts no estado final, usando as constantes do `nodes.py` | Testa o comportamento real, não valores injetados. Limitação conhecida: os testes de encaminhar e revisar dependem das palavras-chave do classificador falso e vão quebrar com o modelo real |
 
 ## 10. Escala e desempenho *(planejado)*
 
@@ -256,14 +268,17 @@ Tudo roda localmente com ferramentas open source. A AWS fica para depois que o s
 src/ticketflow/        Pacote Python do projeto
   config.py            Caminhos e configurações lidas do .env
   data/load.py         Leitura do dataset com a limpeza mínima comum a todas as etapas
-  agents/              Grafo de triagem no LangGraph (em construção)
+  agents/              Grafo de triagem no LangGraph
     state.py           O estado: o que o ticket carrega pelo grafo
     nodes.py           Uma função por nó
-    graph.py           Montagem do grafo: nós e arestas
+    graph.py           Montagem do grafo: nós, arestas e roteadoras
+tests/
+  agents/test_graph.py Testes dos 3 caminhos do grafo
 scripts/
   download_data.py     Baixa o dataset do Hugging Face para data/raw/
 notebooks/
   01_exploracao_dataset.ipynb   Exploração do dataset e checagem de separabilidade
+  02_grafo_triagem.ipynb        Desenho do grafo e os 3 caminhos com tickets de exemplo
 docker/                Imagem do MLflow e script de criação do banco
 docs/                  Documento original de decisões (PDF)
 data/                  raw/ e processed/, fora do Git
@@ -281,6 +296,7 @@ cp .env.example .env                      # e troque a senha do Postgres
 uv run python scripts/download_data.py    # baixa o dataset para data/raw/
 docker compose up -d                      # PostgreSQL em :5432 e MLflow em http://localhost:5000
 uv run jupyter lab notebooks/             # abre a exploração
+uv run pytest -v                          # testes do grafo de triagem
 ```
 
 ## 14. Roadmap
@@ -289,13 +305,14 @@ uv run jupyter lab notebooks/             # abre a exploração
   - [x] Problema de negócio e decisões de arquitetura
   - [x] Estrutura do repositório, ambiente (uv) e Docker Compose base (PostgreSQL + MLflow)
   - [x] Exploração do dataset e revisão das premissas
-- [ ] **Fase 1 · Esqueleto do grafo de triagem**
+- [x] **Fase 1 · Esqueleto do grafo de triagem**
   - [x] Definição de ticket completo e arquitetura do grafo
-  - [ ] Estado (`TicketState`)
-  - [ ] Nós com valores fixos e arestas condicionais
-  - [ ] Testes dos três caminhos: esclarecimento, encaminhamento e revisão
-  - [ ] Contrato do classificador, com o baseline TF-IDF como implementação provisória
+  - [x] Estado (`TicketState`)
+  - [x] Nós com valores fixos e arestas condicionais
+  - [x] Testes dos três caminhos: esclarecimento, encaminhamento e revisão
 - [ ] **Fase 2 · Modelo clássico**
+  - [ ] Contrato do classificador, com o baseline TF-IDF como implementação provisória e um classificador falso
+    injetado nos testes do grafo
   - [ ] Divisão treino/validação/teste fixa e reproduzível
   - [ ] Baselines de fila e prioridade, com pesos de classe, registrados no MLflow
   - [ ] Comparação com embeddings multilíngues
@@ -333,7 +350,8 @@ Decisões a fechar antes ou durante a implementação, com o que os dados já di
 | Quais filas viram categorias, e se as pequenas serão agrupadas | Agrupar as três filas de suporte sobe a acurácia de 59% para 74%, mas o F1 macro cai. O desbalanceamento continua | Fase 2 |
 | Provedor e modelo do LLM (priorizar um modelo pequeno e barato) | O LLM pode receber a maior parte do volume, então o custo por ticket pesa mais que o previsto | Fase 4, comparando acerto e custo nos mesmos tickets |
 | Regras que elevam um ticket para P1 | *high* é 39% dos tickets; as regras precisam ser estreitas para o P1 continuar raro | Fase 2 |
-| Limites X e Y das faixas de completude | A definição está fechada (ver [Agentes](#4-agentes)). 904 tickets têm corpo com menos de 60 caracteres, mas falta uma amostra rotulada à mão (~100 tickets) para calibrar | Fase 4 |
+| Limites X e Y das faixas de completude | A definição está fechada (ver [Agentes](#4-agentes)). 904 tickets têm corpo com menos de 60 caracteres, e o esqueleto usa 60 como X provisório. Falta uma amostra rotulada à mão (~100 tickets) para calibrar | Fase 4 |
+| Testes do grafo independentes dos modelos | Hoje os testes de encaminhar e revisar dependem das palavras-chave do classificador falso, e o de fronteira depende da regra de tamanho | Fase 2 (classificador) e Fase 4 (verificador com LLM), injetando versões falsas nos testes |
 | Fração de correções que dispara o retreino | Sem dado ainda | Fase 5 |
 
 ## 16. Futuras implementações
